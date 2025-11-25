@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">
-  mcp-scan
+  FlowScan
   </h1>
 </p>
 
