@@ -143,8 +143,9 @@ class ScannerEngine:
                     if file_issues:
                         all_issues.extend(file_issues)
                         self.stats.issue_count += len(file_issues)
+                        self.stats.files_with_issues += 1
                         for i in file_issues:
-                            self.stats.issue_distribution[i.issue_type] += 1
+                            self.stats.issue_distribution[i.severity] += 1
                 except Exception as e:
                     self.stats.error_count += 1
                     print(f"Error scanning {file_path}: {e}")

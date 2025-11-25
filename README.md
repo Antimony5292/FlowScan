@@ -1,5 +1,18 @@
-# FlowScan
-FlowScan is a modular security scanner designed for AI workflows and agents. It helps developers and security engineers detect potential vulnerabilities, such as hardcoded secrets and prompt injection risks, in popular automation frameworks like n8n and Dify.
+<p align="center">
+  <h1 align="center">
+  mcp-scan
+  </h1>
+</p>
+
+<p align="center">
+  FlowScan is a modular security scanner designed for AI workflows and agents.
+</p>
+
+<div align="center">
+  <img src="https://github.com/Antimony5292/img/blob/main/FlowScan_example.png" alt="logo"/>
+</div>
+
+
 
 ## 🚀 Features
 

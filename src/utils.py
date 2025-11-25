@@ -22,4 +22,3 @@ class ScanStats:
     error_count: int = 0
     files_with_issues: int = 0
     issue_distribution: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    severity_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
