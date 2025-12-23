@@ -26,8 +26,15 @@ class BaseScanner(ABC):
 class N8nScanner(BaseScanner):
     
     def identify(self, file_path: str) -> bool:
-        # n8n usually .json
-        return file_path.endswith('.json')
+        # n8n workflows usually end with .json and contain a 'nodes' key
+        if not file_path.endswith('.json'):
+            return False
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return isinstance(data, dict) and 'nodes' in data
+        except:
+            return False
 
     def scan(self, file_path: str) -> List[Issue]:
         issues = []
@@ -35,61 +42,149 @@ class N8nScanner(BaseScanner):
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 1. Check Meta Data
             wf_name = data.get('name', 'Untitled')
-            secret_hits = SecurityRules.check_hardcoded_secrets(wf_name, "Workflow Name")
-            for hit in secret_hits:
-                issues.append(Issue(file_path, "Hardcoded Secret", hit, "High"))
-
-            # 2. Check Nodes
+            
+            # 1. Check Nodes
             for node in data.get('nodes', []):
                 node_name = node.get('name', 'Unknown')
                 node_type = node.get('type', '')
-                params = str(node.get('parameters', {}))
+                params = node.get('parameters', {})
+                param_str = json.dumps(params)
                 
-                # Rule A: Secrets / Credentials
-                param_hits = SecurityRules.check_hardcoded_secrets(params, f"Node: {node_name}")
-                for hit in param_hits:
+                context = f"Node '{node_name}' ({node_type})"
+
+                # Rule: Hardcoded Secrets
+                secret_hits = SecurityRules.check_hardcoded_secrets(param_str, context)
+                for hit in secret_hits:
                     issues.append(Issue(file_path, "Hardcoded Secret", hit, "High"))
                 
-                # Rule B: Injection
-                injection_hits = SecurityRules.check_prompt_injection(node_type, params)
-                for hit in injection_hits:
-                    issues.append(Issue(file_path, "Prompt Injection Risk", f"Node '{node_name}': {hit}", "Medium"))
+                # Rule: PII Disclosure
+                pii_hits = SecurityRules.check_pii_disclosure(param_str, context)
+                for hit in pii_hits:
+                    issues.append(Issue(file_path, "PII Leakage", hit, "Medium"))
+
+                # Rule: Insecure HTTP
+                url = params.get('url', '')
+                if url:
+                    http_hits = SecurityRules.check_insecure_http(url, context)
+                    for hit in http_hits:
+                        issues.append(Issue(file_path, "Insecure Transport", hit, "Medium"))
+
+                # Rule: Dangerous Code (n8n.code)
+                if "n8n-nodes-base.code" in node_type:
+                    js_code = params.get('jsCode', '')
+                    code_hits = SecurityRules.check_dangerous_code(js_code, "javascript", context)
+                    for hit in code_hits:
+                        issues.append(Issue(file_path, "Dangerous Code", hit, "High"))
+
+                # Rule: Prompt Injection & Leaking (AI nodes)
+                prompt = params.get('prompt', '') or params.get('text', '') or params.get('systemPrompt', '')
+                if prompt:
+                    prompt_hits = SecurityRules.check_prompt_risks(str(prompt), context)
+                    for hit in prompt_hits:
+                        issues.append(Issue(file_path, "Prompt Security Risk", hit, "Medium"))
+
+            # 2. Excessive Agency (Graph Analysis)
+            issues.extend(self._check_excessive_agency(data, file_path))
 
         except Exception as e:
             print(f"DEBUG: Error parsing n8n file {file_path}: {e}")
         
         return issues
 
+    def _check_excessive_agency(self, data: Dict[str, Any], file_path: str) -> List[Issue]:
+        """n8n 拓扑审计：寻找 AI -> Destructive 且无 Approval 的路径"""
+        issues = []
+        nodes = {n['name']: n for n in data.get('nodes', [])}
+        connections = data.get('connections', {})
+
+        # 1. 识别触发源（如 AI 节点或 Webhook）
+        trigger_nodes = []
+        for name, node in nodes.items():
+            ntype = node.get('type', '').lower()
+            if any(t in ntype for t in ["llm", "chat", "webhook", "ai"]):
+                trigger_nodes.append(name)
+
+        # 2. 深度优先搜索 (DFS) 查找危险路径
+        for start_node in trigger_nodes:
+            visited = set()
+            stack = [(start_node, False)] # (node_name, seen_approval)
+            
+            while stack:
+                curr_name, seen_approval = stack.pop()
+                if curr_name in visited: continue
+                visited.add(curr_name)
+
+                curr_node = nodes.get(curr_name)
+                if not curr_node: continue
+
+                # 更新审批状态
+                if SecurityRules.is_approval_node(curr_node.get('type', '')):
+                    seen_approval = True
+
+                # 检查是否为破坏性节点且未经过审批
+                if not seen_approval and SecurityRules.is_destructive_node(curr_node.get('type', ''), curr_node.get('parameters', {})):
+                    issues.append(Issue(
+                        file_path, 
+                        "Excessive Agency", 
+                        f"Potentially destructive node '{curr_name}' is triggered by '{start_node}' without manual approval.", 
+                        "High"
+                    ))
+
+                # 获取下游节点
+                node_conns = connections.get(curr_name, {}).get('main', [])
+                for conn_group in node_conns:
+                    for target in conn_group:
+                        stack.append((target.get('node'), seen_approval))
+
+        return issues
+
 
 class DifyScanner(BaseScanner):
-    """
-    (扩展示例) Dify 专用扫描器
-    Dify 导出通常是 YAML (DSL)
-    """
     
     def identify(self, file_path: str) -> bool:
-        return file_path.endswith('.yml') or file_path.endswith('.yaml')
+        # Dify DSL usually .yml or .yaml and contains 'workflow' or 'app'
+        if not (file_path.endswith('.yml') or file_path.endswith('.yaml')):
+            return False
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+                return isinstance(data, dict) and ('workflow' in data or 'app' in data)
+        except:
+            return False
 
     def scan(self, file_path: str) -> List[Issue]:
         issues = []
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                # 假设使用了 pyyaml
                 data = yaml.safe_load(f)
             
-            # Dify 的结构不同，通常有 'app' 和 'workflow' 键
             if not data: return []
             
-            app_name = data.get('app', {}).get('name', '')
-            if "test_key" in app_name:
-                issues.append(Issue(file_path, "Hardcoded Secret", "App name contains 'test_key'", "High"))
+            # Dify workflow nodes are typically in data['workflow']['nodes']
+            nodes = data.get('workflow', {}).get('nodes', [])
+            for node in nodes:
+                node_name = node.get('data', {}).get('title', 'Unknown')
+                node_type = node.get('data', {}).get('type', '')
+                node_data = node.get('data', {})
+                node_str = json.dumps(node_data)
                 
-            # 这里可以添加针对 Dify Block 的遍历逻辑...
-            
-        except Exception:
-            pass # 暂时忽略 Dify 错误
+                context = f"Block '{node_name}' ({node_type})"
+
+                # Rule: PII Disclosure
+                pii_hits = SecurityRules.check_pii_disclosure(node_str, context)
+                for hit in pii_hits:
+                    issues.append(Issue(file_path, "PII Leakage", hit, "Medium"))
+
+                # Rule: Dangerous Python Code
+                if node_type == 'code':
+                    py_code = node_data.get('code', '')
+                    code_hits = SecurityRules.check_dangerous_code(py_code, "python", context)
+                    for hit in code_hits:
+                        issues.append(Issue(file_path, "Dangerous Code", hit, "High"))
+
+        except Exception as e:
+            print(f"DEBUG: Error parsing Dify file {file_path}: {e}")
             
         return issues
 

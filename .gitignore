@@ -208,4 +208,5 @@ __marimo__/
 
 workflows/
 *.ipynb
-report.html
+*.html
+tests/
